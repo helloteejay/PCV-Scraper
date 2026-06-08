@@ -106,6 +106,61 @@ def _detect_ps40(record: dict) -> bool | None:
     return None
 
 
+def _summarize_arrays(node: Any, path: str = "$", out: list | None = None,
+                      max_entries: int = 80) -> list[tuple[str, int, list]]:
+    """Find every list-of-objects in a JSON tree.
+
+    Returns (path, length, sample_keys) tuples so the logs reveal exactly where
+    listings live and what their fields are called. Diagnostic only.
+    """
+    if out is None:
+        out = []
+    if len(out) >= max_entries:
+        return out
+    if isinstance(node, list):
+        dicts = [x for x in node if isinstance(x, dict)]
+        if dicts:
+            keys = sorted({k for d in dicts[:3] for k in d.keys()})
+            out.append((path, len(node), keys[:35]))
+        for i, x in enumerate(node[:4]):
+            _summarize_arrays(x, f"{path}[{i}]", out, max_entries)
+    elif isinstance(node, dict):
+        for k, v in node.items():
+            _summarize_arrays(v, f"{path}.{k}", out, max_entries)
+    return out
+
+
+def _log_diagnostics(captured, next_data_obj, page, log) -> None:
+    """Emit a compact map of the page's data sources to the run logs."""
+    log("=== DIAGNOSTICS ===")
+    log(f"Captured JSON response URLs ({len(captured)}):")
+    for url, _ in captured:
+        log(f"  • {url[:160]}")
+    for label, payload in (
+        [(f"net[{i}]", j) for i, (_, j) in enumerate(captured)]
+        + ([("__NEXT_DATA__", next_data_obj)] if next_data_obj is not None else [])
+    ):
+        for p, n, keys in _summarize_arrays(payload):
+            if n >= 1:
+                log(f"  [{label}] array {p} len={n} keys={keys}")
+    # DOM signal: how many obvious listing-ish anchors/cards exist.
+    try:
+        counts = page.evaluate(
+            """() => ({
+                anchors: document.querySelectorAll('a').length,
+                aptLinks: [...document.querySelectorAll('a')]
+                    .filter(a => /apartment|leasing|unit|floorplan|\\/p\\//i
+                        .test(a.getAttribute('href')||'')).length,
+                dollar: (document.body.innerText.match(/\\$\\s?\\d[\\d,]{2,}/g)||[]).length,
+                bodyLen: document.body.innerText.length
+            })"""
+        )
+        log(f"  DOM: {counts}")
+    except Exception as e:
+        log(f"  DOM probe failed: {e}")
+    log("=== END DIAGNOSTICS ===")
+
+
 def normalize_unit(record: dict) -> dict | None:
     """Map a raw listing dict to our normalized shape, or None if unusable."""
     bedrooms = _to_int(_first(record, "bedrooms", "beds", "bedroomCount",
@@ -243,10 +298,19 @@ def scrape(log=print) -> list[dict]:
         except Exception as e:
             log(f"Could not save page debug artifacts: {e}")
 
-        # --- Source 1: captured JSON API responses ---------------------------
-        for url, payload in captured:
-            for rec in _iter_listing_dicts(payload):
-                raw_units.append(rec)
+        # --- Grab embedded __NEXT_DATA__ (used for parsing + diagnostics) ----
+        next_data_obj = None
+        try:
+            next_data = page.evaluate(
+                "() => { const el = document.getElementById('__NEXT_DATA__');"
+                " return el ? el.textContent : null; }"
+            )
+            if next_data:
+                _save_debug(f"nextdata-{ts}.json", next_data[:2_000_000])
+                next_data_obj = json.loads(next_data)
+        except Exception as e:
+            log(f"__NEXT_DATA__ extraction failed: {e}")
+
         if captured:
             try:
                 slim = [{"url": u, "json": j} for u, j in captured]
@@ -254,23 +318,23 @@ def scrape(log=print) -> list[dict]:
                             json.dumps(slim, default=str)[:2_000_000])
             except Exception:
                 pass
+
+        # Diagnostics: map where the data actually lives + field names.
+        if os.environ.get("DIAGNOSTICS", "1") == "1":
+            _log_diagnostics(captured, next_data_obj, page, log)
+
+        # --- Source 1: captured JSON API responses ---------------------------
+        for url, payload in captured:
+            for rec in _iter_listing_dicts(payload):
+                raw_units.append(rec)
         log(f"Captured {len(captured)} JSON responses; "
             f"{len(raw_units)} listing-like records from network")
 
         # --- Source 2: embedded __NEXT_DATA__ / inline JSON ------------------
-        if not raw_units:
-            try:
-                next_data = page.evaluate(
-                    "() => { const el = document.getElementById('__NEXT_DATA__');"
-                    " return el ? el.textContent : null; }"
-                )
-                if next_data:
-                    _save_debug(f"nextdata-{ts}.json", next_data[:2_000_000])
-                    for rec in _iter_listing_dicts(json.loads(next_data)):
-                        raw_units.append(rec)
-                    log(f"Recovered {len(raw_units)} records from __NEXT_DATA__")
-            except Exception as e:
-                log(f"__NEXT_DATA__ extraction failed: {e}")
+        if not raw_units and next_data_obj is not None:
+            for rec in _iter_listing_dicts(next_data_obj):
+                raw_units.append(rec)
+            log(f"Recovered {len(raw_units)} records from __NEXT_DATA__")
 
         browser.close()
 
