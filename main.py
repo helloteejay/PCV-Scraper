@@ -49,6 +49,13 @@ def save_state(state: dict) -> None:
 
 
 def main() -> int:
+    # Test mode: send a Telegram connectivity check and exit. Triggered by the
+    # workflow's "send_test_message" input. Runs regardless of the time window.
+    if os.environ.get("TELEGRAM_TEST") == "1":
+        log("Test mode: sending Telegram connectivity check.")
+        notify.send_test(log=log)
+        return 0
+
     if not within_active_window():
         return 0
 

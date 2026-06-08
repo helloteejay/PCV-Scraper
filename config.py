@@ -45,19 +45,14 @@ WANT_BEDROOMS = 2
 WANT_BATHROOMS = 2
 
 # PS40 = the P.S. 40 (Augustus Saint-Gaudens) elementary school zone. StuyTown
-# exposes this as a checkbox filter. We try to apply it in the UI and also
-# detect it in the scraped data.
+# exposes this as a per-unit amenity (code "PS40" / "PS40 School District"),
+# which we match directly in the unit data — see scraper._detect_ps40.
 WANT_PS40 = True
 
-# Text we look for to find/click the PS40 filter checkbox in the page UI.
-# (Case-insensitive substring match against control labels.)
-PS40_LABEL_HINTS = ["ps40", "ps 40", "p.s. 40", "p.s.40"]
-
-# If we cannot positively determine a unit's PS40 status from the scraped data
-# (because we don't yet know the field name), trust that the site-side filter
-# already constrained the results. Set to False once we've confirmed the data
-# field and want strict code-side enforcement.
-PS40_TRUST_SITE_FILTER = True
+# Fallback only: if a unit's PS40 status can't be determined from its data,
+# whether to let it through (True) or exclude it (False). Detection is reliable
+# now that PS40 is a known amenity, so this rarely matters.
+PS40_TRUST_SITE_FILTER = False
 
 # ---------------------------------------------------------------------------
 # When to run (active window enforced in code so DST + day boundaries are safe)

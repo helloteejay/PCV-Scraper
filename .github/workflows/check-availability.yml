@@ -17,6 +17,10 @@ on:
         description: "Run even if outside the Tue–Sat 7am–9pm ET window"
         type: boolean
         default: true
+      send_test_message:
+        description: "Just send a Telegram test message and exit"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -49,6 +53,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # Manual runs ignore the time window by default so you can test anytime.
           ENFORCE_ACTIVE_WINDOW: ${{ (github.event_name == 'workflow_dispatch' && inputs.ignore_window) && '0' || '1' }}
+          TELEGRAM_TEST: ${{ (github.event_name == 'workflow_dispatch' && inputs.send_test_message) && '1' || '0' }}
         run: python main.py
 
       - name: Commit updated state

@@ -85,113 +85,72 @@ def _to_price(val: Any) -> int | None:
 
 
 def _detect_ps40(record: dict) -> bool | None:
-    """True/False if we can tell, None if undetectable from this record."""
-    # Explicit-ish fields first.
-    explicit = _first(record, "ps40", "isPS40", "schoolZone", "school",
-                       "schoolDistrict", "elementarySchool")
-    if explicit is not None:
-        s = str(explicit).lower()
-        if any(h.replace(" ", "") in s.replace(" ", "")
-               for h in config.PS40_LABEL_HINTS):
-            return True
-        # A populated, non-matching school field means "not PS40".
-        if isinstance(explicit, bool):
-            return explicit
+    """True/False if we can tell, None if undetectable from this record.
+
+    StuyTown encodes the P.S. 40 school zone as a unit amenity, e.g.
+        {"searchCode": "PS40Code", "code": "PS40",
+         "friendlyDescription": "PS40 School District"}
+    """
+    amenities = record.get("amenities")
+    if isinstance(amenities, list):
+        for a in amenities:
+            if not isinstance(a, dict):
+                continue
+            blob = (str(a.get("code", "")) + str(a.get("searchCode", ""))
+                    + str(a.get("friendlyDescription", ""))).upper().replace(" ", "")
+            if "PS40" in blob:
+                return True
+        # Amenities present but no PS40 entry -> definitively not PS40.
         return False
-    # Fallback: scan the whole record's JSON for a PS40 marker.
-    blob = json.dumps(record, default=str).lower().replace(" ", "")
-    for h in config.PS40_LABEL_HINTS:
-        if h.replace(" ", "") in blob:
-            return True
+    # Fallback for unexpected shapes: scan the record's JSON.
+    if "PS40" in json.dumps(record, default=str).upper().replace(" ", ""):
+        return True
     return None
 
 
-def _summarize_arrays(node: Any, path: str = "$", out: list | None = None,
-                      max_entries: int = 80) -> list[tuple[str, int, list]]:
-    """Find every list-of-objects in a JSON tree.
-
-    Returns (path, length, sample_keys) tuples so the logs reveal exactly where
-    listings live and what their fields are called. Diagnostic only.
-    """
-    if out is None:
-        out = []
-    if len(out) >= max_entries:
-        return out
-    if isinstance(node, list):
-        dicts = [x for x in node if isinstance(x, dict)]
-        if dicts:
-            keys = sorted({k for d in dicts[:3] for k in d.keys()})
-            out.append((path, len(node), keys[:35]))
-        for i, x in enumerate(node[:4]):
-            _summarize_arrays(x, f"{path}[{i}]", out, max_entries)
-    elif isinstance(node, dict):
-        for k, v in node.items():
-            _summarize_arrays(v, f"{path}.{k}", out, max_entries)
-    return out
-
-
-def _log_diagnostics(captured, next_data_obj, page, log) -> None:
-    """Emit a compact map of the page's data sources to the run logs."""
-    log("=== DIAGNOSTICS ===")
-    log(f"Captured JSON response URLs ({len(captured)}):")
-    for url, _ in captured:
-        log(f"  • {url[:160]}")
-    for label, payload in (
-        [(f"net[{i}]", j) for i, (_, j) in enumerate(captured)]
-        + ([("__NEXT_DATA__", next_data_obj)] if next_data_obj is not None else [])
-    ):
-        for p, n, keys in _summarize_arrays(payload):
-            if n >= 1:
-                log(f"  [{label}] array {p} len={n} keys={keys}")
-    # DOM signal: how many obvious listing-ish anchors/cards exist.
-    try:
-        counts = page.evaluate(
-            """() => ({
-                anchors: document.querySelectorAll('a').length,
-                aptLinks: [...document.querySelectorAll('a')]
-                    .filter(a => /apartment|leasing|unit|floorplan|\\/p\\//i
-                        .test(a.getAttribute('href')||'')).length,
-                dollar: (document.body.innerText.match(/\\$\\s?\\d[\\d,]{2,}/g)||[]).length,
-                bodyLen: document.body.innerText.length
-            })"""
-        )
-        log(f"  DOM: {counts}")
-    except Exception as e:
-        log(f"  DOM probe failed: {e}")
-    log("=== END DIAGNOSTICS ===")
-
-
 def normalize_unit(record: dict) -> dict | None:
-    """Map a raw listing dict to our normalized shape, or None if unusable."""
-    bedrooms = _to_int(_first(record, "bedrooms", "beds", "bedroomCount",
-                              "numberOfBedrooms", "bed"))
-    bathrooms = _to_int(_first(record, "bathrooms", "baths", "bathroomCount",
-                               "numberOfBathrooms", "bath", "fullBathrooms"))
-    price = _to_price(_first(record, "price", "rent", "netRent", "monthlyRent",
-                             "startingPrice", "minPrice", "displayPrice"))
-    unit_no = _first(record, "unitNumber", "apartmentNumber", "unit", "aptNo",
-                     "number", "name")
-    address = _first(record, "address", "buildingAddress", "streetAddress",
-                     "building", "addressLine1")
-    url = _first(record, "url", "detailUrl", "permalink", "link", "slug",
-                 "path", "href")
-    if isinstance(url, str) and url.startswith("/"):
-        url = "https://www.stuytown.com" + url
-    floorplan = _first(record, "floorplan", "floorPlan", "layout", "unitType")
-    available = _first(record, "availableDate", "availabilityDate",
-                       "dateAvailable", "moveInDate")
-    unit_id = _first(record, "id", "unitId", "listingId", "guid", "uid",
-                     "apartmentId")
+    """Map a raw StuyTown unit dict to our normalized shape, or None.
 
-    # A record with no bedroom signal is probably not a real unit.
-    if bedrooms is None and unit_no is None and url is None:
+    Shape confirmed from the live API; generic fallbacks are kept so the code
+    still works if StuyTown renames a field.
+    """
+    if not isinstance(record, dict):
         return None
 
-    # Build a stable identity. Prefer an explicit id, then URL, then a composite.
+    bedrooms = _to_int(_first(record, "bedrooms", "beds", "bedroomCount"))
+    bathrooms = _to_int(_first(record, "bathrooms", "baths", "bathroomCount"))
+    price = _to_price(_first(record, "price", "rent", "netRent", "monthlyRent"))
+    sqft = _to_int(_first(record, "sqft", "squareFeet", "size"))
+    unit_no = _first(record, "unitNumber", "apartmentNumber", "unit", "aptNo")
+    available = _first(record, "availableDate", "availabilityDate",
+                       "dateAvailable", "moveInDate")
+    unit_id = _first(record, "unitSpk", "id", "unitId", "listingId", "guid")
+
+    is_available = record.get("isAvailable")
+    if not isinstance(is_available, bool):
+        is_available = True  # assume listed == available unless told otherwise
+
+    # Nested building object holds the address.
+    building = record.get("building") if isinstance(record.get("building"), dict) else {}
+    address = (building.get("buildingName") or building.get("address")
+               or _first(record, "address", "buildingAddress", "streetAddress"))
+
+    # Finish (e.g. "Classic", "Platinum") doubles as a human-friendly layout tag.
+    finish_obj = record.get("finish") if isinstance(record.get("finish"), dict) else {}
+    finish = finish_obj.get("name") or _first(record, "finish", "layout", "unitType")
+
+    url = _first(record, "url", "detailUrl", "permalink", "link", "href")
+    if isinstance(url, str) and url.startswith("/"):
+        url = "https://www.stuytown.com" + url
+
+    # Not a real unit if it lacks the basics.
+    if bedrooms is None and unit_no is None and unit_id is None:
+        return None
+
     identity = (
         str(unit_id) if unit_id is not None
         else str(url) if url
-        else f"{address}|{unit_no}|{floorplan}|{bedrooms}bd{bathrooms}ba"
+        else f"{address}|{unit_no}|{bedrooms}bd{bathrooms}ba"
     )
 
     return {
@@ -201,15 +160,18 @@ def normalize_unit(record: dict) -> dict | None:
         "bedrooms": bedrooms,
         "bathrooms": bathrooms,
         "price": price,
-        "floorplan": str(floorplan) if floorplan else None,
+        "sqft": sqft,
+        "floorplan": str(finish) if finish else None,
         "available": str(available) if available else None,
+        "is_available": is_available,
         "ps40": _detect_ps40(record),
         "url": str(url) if url else config.SEARCH_URL,
-        "raw_keys": sorted(record.keys()) if isinstance(record, dict) else [],
     }
 
 
 def matches_criteria(unit: dict) -> bool:
+    if not unit.get("is_available", True):
+        return False
     if unit["bedrooms"] is not None and unit["bedrooms"] != config.WANT_BEDROOMS:
         return False
     if unit["bathrooms"] is not None and unit["bathrooms"] != config.WANT_BATHROOMS:
@@ -227,22 +189,6 @@ def _save_debug(name: str, content: str | bytes) -> None:
     mode = "wb" if isinstance(content, bytes) else "w"
     with open(os.path.join(config.DEBUG_DIR, name), mode) as f:
         f.write(content)
-
-
-def _try_apply_ps40(page, log) -> None:
-    """Best-effort click of the PS40 filter checkbox in the page UI."""
-    for hint in config.PS40_LABEL_HINTS:
-        try:
-            # Try a label/text containing the hint, case-insensitive.
-            locator = page.get_by_text(re.compile(re.escape(hint), re.I))
-            if locator.count() > 0:
-                locator.first.click(timeout=3000)
-                log(f"Clicked PS40 filter via text match: '{hint}'")
-                page.wait_for_timeout(config.SETTLE_MS)
-                return
-        except Exception:
-            continue
-    log("PS40 filter control not found in UI (relying on URL param / data filter)")
 
 
 def _api_get(request_ctx, url: str, params: dict, log) -> Any:
@@ -325,8 +271,8 @@ def scrape(log=print) -> list[dict]:
         except Exception as e:
             log(f"Warm-up navigation issue (continuing): {e}")
 
-        # One-time schema diagnostic.
-        if os.environ.get("DIAGNOSTICS", "1") == "1":
+        # Schema diagnostic (off by default; set DIAGNOSTICS=1 to inspect).
+        if os.environ.get("DIAGNOSTICS", "0") == "1":
             _log_unit_schema(ctx.request, log)
 
         # Real query for the units we want.
