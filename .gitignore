@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local env / secrets — never commit these
+.env
+
+# Debug artifacts are uploaded by CI as run artifacts, not committed
+debug/
