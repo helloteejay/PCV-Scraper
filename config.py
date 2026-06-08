@@ -18,6 +18,26 @@ SEARCH_URL = (
     "?Bedrooms=2&Bathrooms=2&Order=low-price"
 )
 
+# The site's internal JSON API (discovered from the page's own network calls).
+# We query this directly — far more robust than scraping rendered HTML.
+API_UNITS = "https://units.stuytown.com/api/units"
+API_COUNT = "https://units.stuytown.com/api/units/units-filter/count"
+PROPERTY_NAME = "Stuyvesant Town_Peter Cooper Village"
+
+# Query params for the units we want. PS40 handled separately (see below).
+API_FILTERS = {
+    "Bedrooms": 2,
+    "Bathrooms": 2,
+    "Order": "low-price",
+    "itemsOnPage": 100,
+    "page": 0,
+}
+
+# How the PS40 school-zone filter is applied via the API. Once confirmed from
+# the live data, set this to a (param_name, value) tuple, e.g. ("Ps40", "true").
+# While None, we fall back to per-unit detection in _detect_ps40.
+PS40_API_PARAM = None
+
 # The unit criteria we actually care about. Filtering is done in code against
 # the data we scrape, so even if the site ignores a URL param we still only
 # alert on genuine matches.

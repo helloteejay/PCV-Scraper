@@ -245,11 +245,63 @@ def _try_apply_ps40(page, log) -> None:
     log("PS40 filter control not found in UI (relying on URL param / data filter)")
 
 
+def _api_get(request_ctx, url: str, params: dict, log) -> Any:
+    """GET a StuyTown API endpoint via the browser's request context."""
+    from urllib.parse import urlencode
+
+    full = url + "?" + urlencode(params)
+    try:
+        resp = request_ctx.get(full, timeout=config.NAV_TIMEOUT_MS)
+    except Exception as e:
+        log(f"  API request error: {e}")
+        return None
+    log(f"  GET {full} -> {resp.status}")
+    body = None
+    try:
+        body = resp.json()
+    except Exception:
+        try:
+            log(f"  (non-JSON body head: {resp.text()[:200]!r})")
+        except Exception:
+            pass
+    return body
+
+
+def _log_unit_schema(request_ctx, log) -> None:
+    """One-time diagnostic: dump a real unit's fields to learn the schema."""
+    log("=== SCHEMA PROBE ===")
+    total = _api_get(request_ctx, config.API_COUNT,
+                     {"PropertyName": config.PROPERTY_NAME}, log)
+    log(f"  Total inventory count payload: {json.dumps(total)[:300]}")
+    sample = _api_get(request_ctx, config.API_UNITS,
+                      {"PropertyName": config.PROPERTY_NAME, "itemsOnPage": 3,
+                       "page": 0}, log)
+    if sample is not None:
+        if isinstance(sample, dict):
+            log(f"  units payload top-level keys: {sorted(sample.keys())}")
+        units = list(_iter_listing_dicts(sample))
+        log(f"  sample unit dicts found: {len(units)}")
+        if units:
+            log(f"  FIRST UNIT KEYS: {sorted(units[0].keys())}")
+            log(f"  FIRST UNIT JSON: {json.dumps(units[0], default=str)[:1800]}")
+            # Surface any field that might encode school zone / PS40.
+            for u in units[:1]:
+                hits = {k: v for k, v in u.items()
+                        if "school" in k.lower() or "ps40" in str(v).lower()
+                        or "ps 40" in str(v).lower() or "zone" in k.lower()}
+                log(f"  candidate school/PS40 fields: {hits}")
+    log("=== END SCHEMA PROBE ===")
+
+
 def scrape(log=print) -> list[dict]:
-    """Return a list of normalized units currently matching our criteria."""
+    """Return a list of normalized units currently matching our criteria.
+
+    Queries StuyTown's internal JSON API directly. A short browser visit first
+    establishes cookies / anti-bot context, then we call the API with the
+    browser's request session.
+    """
     from playwright.sync_api import sync_playwright
 
-    captured: list[tuple[str, Any]] = []
     raw_units: list[dict] = []
 
     with sync_playwright() as p:
@@ -265,76 +317,39 @@ def scrape(log=print) -> list[dict]:
         page = ctx.new_page()
         page.set_default_timeout(config.NAV_TIMEOUT_MS)
 
-        def on_response(resp):
-            try:
-                ct = resp.headers.get("content-type", "")
-                if "application/json" in ct:
-                    captured.append((resp.url, resp.json()))
-            except Exception:
-                pass
-
-        page.on("response", on_response)
-
-        log(f"Navigating to {config.SEARCH_URL}")
-        page.goto(config.SEARCH_URL, wait_until="domcontentloaded")
+        # Warm up: load the search page so the API sees normal browser cookies.
+        log(f"Warming session at {config.SEARCH_URL}")
         try:
-            page.wait_for_load_state("networkidle", timeout=config.NAV_TIMEOUT_MS)
-        except Exception:
-            log("networkidle not reached; continuing")
-        page.wait_for_timeout(config.SETTLE_MS)
-
-        if config.WANT_PS40:
-            _try_apply_ps40(page, log)
-
-        # Give any post-filter XHRs a moment to land.
-        page.wait_for_timeout(config.SETTLE_MS)
-
-        # --- Debug artifacts -------------------------------------------------
-        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-        try:
-            _save_debug(f"page-{ts}.html", page.content())
-            page.screenshot(path=os.path.join(config.DEBUG_DIR,
-                                              f"page-{ts}.png"), full_page=True)
+            page.goto(config.SEARCH_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(config.SETTLE_MS)
         except Exception as e:
-            log(f"Could not save page debug artifacts: {e}")
+            log(f"Warm-up navigation issue (continuing): {e}")
 
-        # --- Grab embedded __NEXT_DATA__ (used for parsing + diagnostics) ----
-        next_data_obj = None
-        try:
-            next_data = page.evaluate(
-                "() => { const el = document.getElementById('__NEXT_DATA__');"
-                " return el ? el.textContent : null; }"
-            )
-            if next_data:
-                _save_debug(f"nextdata-{ts}.json", next_data[:2_000_000])
-                next_data_obj = json.loads(next_data)
-        except Exception as e:
-            log(f"__NEXT_DATA__ extraction failed: {e}")
-
-        if captured:
-            try:
-                slim = [{"url": u, "json": j} for u, j in captured]
-                _save_debug(f"captured-{ts}.json",
-                            json.dumps(slim, default=str)[:2_000_000])
-            except Exception:
-                pass
-
-        # Diagnostics: map where the data actually lives + field names.
+        # One-time schema diagnostic.
         if os.environ.get("DIAGNOSTICS", "1") == "1":
-            _log_diagnostics(captured, next_data_obj, page, log)
+            _log_unit_schema(ctx.request, log)
 
-        # --- Source 1: captured JSON API responses ---------------------------
-        for url, payload in captured:
-            for rec in _iter_listing_dicts(payload):
-                raw_units.append(rec)
-        log(f"Captured {len(captured)} JSON responses; "
-            f"{len(raw_units)} listing-like records from network")
+        # Real query for the units we want.
+        params = dict(config.API_FILTERS)
+        params["PropertyName"] = config.PROPERTY_NAME
+        if config.PS40_API_PARAM:
+            k, v = config.PS40_API_PARAM
+            params[k] = v
 
-        # --- Source 2: embedded __NEXT_DATA__ / inline JSON ------------------
-        if not raw_units and next_data_obj is not None:
-            for rec in _iter_listing_dicts(next_data_obj):
+        count = _api_get(ctx.request, config.API_COUNT, params, log)
+        log(f"Count for our filters: {json.dumps(count)[:200]}")
+
+        data = _api_get(ctx.request, config.API_UNITS, params, log)
+        if data is not None:
+            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            try:
+                _save_debug(f"units-{ts}.json",
+                            json.dumps(data, default=str)[:2_000_000])
+            except Exception:
+                pass
+            for rec in _iter_listing_dicts(data):
                 raw_units.append(rec)
-            log(f"Recovered {len(raw_units)} records from __NEXT_DATA__")
+        log(f"{len(raw_units)} unit records returned by API")
 
         browser.close()
 
