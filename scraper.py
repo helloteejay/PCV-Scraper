@@ -139,9 +139,17 @@ def normalize_unit(record: dict) -> dict | None:
     finish_obj = record.get("finish") if isinstance(record.get("finish"), dict) else {}
     finish = finish_obj.get("name") or _first(record, "finish", "layout", "unitType")
 
-    url = _first(record, "url", "detailUrl", "permalink", "link", "href")
-    if isinstance(url, str) and url.startswith("/"):
-        url = "https://www.stuytown.com" + url
+    # Build a direct deep link to the unit's own page. StuyTown's route is
+    # /nyc-apartments-for-rent/unit?unitSpk=<spk> (tilde encoded as %7E).
+    spk = _first(record, "unitSpk")
+    if spk:
+        from urllib.parse import quote
+        url = ("https://www.stuytown.com/nyc-apartments-for-rent/unit?unitSpk="
+               + quote(str(spk), safe="").replace("~", "%7E"))
+    else:
+        url = _first(record, "url", "detailUrl", "permalink", "link", "href")
+        if isinstance(url, str) and url.startswith("/"):
+            url = "https://www.stuytown.com" + url
 
     # Not a real unit if it lacks the basics.
     if bedrooms is None and unit_no is None and unit_id is None:
