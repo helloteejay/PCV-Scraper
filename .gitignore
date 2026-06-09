@@ -9,3 +9,10 @@ venv/
 
 # Debug artifacts are uploaded by CI as run artifacts, not committed
 debug/
+
+# Rendered copies of the README (generated on demand, not source)
+README.html
+README.pdf
+
+# Run state is persisted via the GitHub Actions cache, not committed
+state/seen.json

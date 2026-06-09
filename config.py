@@ -18,6 +18,26 @@ SEARCH_URL = (
     "?Bedrooms=2&Bathrooms=2&Order=low-price"
 )
 
+# The site's internal JSON API (discovered from the page's own network calls).
+# We query this directly — far more robust than scraping rendered HTML.
+API_UNITS = "https://units.stuytown.com/api/units"
+API_COUNT = "https://units.stuytown.com/api/units/units-filter/count"
+PROPERTY_NAME = "Stuyvesant Town_Peter Cooper Village"
+
+# Query params for the units we want. PS40 handled separately (see below).
+API_FILTERS = {
+    "Bedrooms": 2,
+    "Bathrooms": 2,
+    "Order": "low-price",
+    "itemsOnPage": 100,
+    "page": 0,
+}
+
+# How the PS40 school-zone filter is applied via the API. Once confirmed from
+# the live data, set this to a (param_name, value) tuple, e.g. ("Ps40", "true").
+# While None, we fall back to per-unit detection in _detect_ps40.
+PS40_API_PARAM = None
+
 # The unit criteria we actually care about. Filtering is done in code against
 # the data we scrape, so even if the site ignores a URL param we still only
 # alert on genuine matches.
@@ -25,19 +45,14 @@ WANT_BEDROOMS = 2
 WANT_BATHROOMS = 2
 
 # PS40 = the P.S. 40 (Augustus Saint-Gaudens) elementary school zone. StuyTown
-# exposes this as a checkbox filter. We try to apply it in the UI and also
-# detect it in the scraped data.
+# exposes this as a per-unit amenity (code "PS40" / "PS40 School District"),
+# which we match directly in the unit data — see scraper._detect_ps40.
 WANT_PS40 = True
 
-# Text we look for to find/click the PS40 filter checkbox in the page UI.
-# (Case-insensitive substring match against control labels.)
-PS40_LABEL_HINTS = ["ps40", "ps 40", "p.s. 40", "p.s.40"]
-
-# If we cannot positively determine a unit's PS40 status from the scraped data
-# (because we don't yet know the field name), trust that the site-side filter
-# already constrained the results. Set to False once we've confirmed the data
-# field and want strict code-side enforcement.
-PS40_TRUST_SITE_FILTER = True
+# Fallback only: if a unit's PS40 status can't be determined from its data,
+# whether to let it through (True) or exclude it (False). Detection is reliable
+# now that PS40 is a known amenity, so this rarely matters.
+PS40_TRUST_SITE_FILTER = False
 
 # ---------------------------------------------------------------------------
 # When to run (active window enforced in code so DST + day boundaries are safe)

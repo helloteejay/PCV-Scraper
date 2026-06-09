@@ -23,13 +23,14 @@ GitHub Actions cron ─▶ main.py ─▶ scraper.py (headless Chromium)
                                       │
                           notify.py ─▶ Telegram message for each NEW unit
                                       │
-                          commit updated state/seen.json back to the repo
+                          save state/seen.json to the Actions cache (no commits)
 ```
 
 - **No simple HTTP scraping** — the site is a JavaScript app, so we drive a real
   headless Chrome (Playwright). That also looks like a genuine browser.
-- **State persists** by committing `state/seen.json` back to the repo each run,
-  so you never get alerted twice for the same unit.
+- **State persists** in the GitHub Actions cache (`state/seen.json`) between
+  runs — so you never get alerted twice for the same unit, with no commit noise
+  in the repo.
 - **Debug artifacts** (rendered HTML + screenshot + captured JSON) are attached
   to every Actions run for 7 days, so the scraper can be tuned against the live
   site.
@@ -114,5 +115,5 @@ Everything adjustable lives in **`config.py`**:
 | `scraper.py` | Headless-browser scraper + listing parser |
 | `notify.py` | Telegram sender |
 | `config.py` | All tunable settings |
-| `state/seen.json` | Units already alerted on (auto-updated) |
+| `state/seen.json` | Units already alerted on (persisted via Actions cache, not committed) |
 | `.github/workflows/check-availability.yml` | The cloud schedule |

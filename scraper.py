@@ -85,58 +85,72 @@ def _to_price(val: Any) -> int | None:
 
 
 def _detect_ps40(record: dict) -> bool | None:
-    """True/False if we can tell, None if undetectable from this record."""
-    # Explicit-ish fields first.
-    explicit = _first(record, "ps40", "isPS40", "schoolZone", "school",
-                       "schoolDistrict", "elementarySchool")
-    if explicit is not None:
-        s = str(explicit).lower()
-        if any(h.replace(" ", "") in s.replace(" ", "")
-               for h in config.PS40_LABEL_HINTS):
-            return True
-        # A populated, non-matching school field means "not PS40".
-        if isinstance(explicit, bool):
-            return explicit
+    """True/False if we can tell, None if undetectable from this record.
+
+    StuyTown encodes the P.S. 40 school zone as a unit amenity, e.g.
+        {"searchCode": "PS40Code", "code": "PS40",
+         "friendlyDescription": "PS40 School District"}
+    """
+    amenities = record.get("amenities")
+    if isinstance(amenities, list):
+        for a in amenities:
+            if not isinstance(a, dict):
+                continue
+            blob = (str(a.get("code", "")) + str(a.get("searchCode", ""))
+                    + str(a.get("friendlyDescription", ""))).upper().replace(" ", "")
+            if "PS40" in blob:
+                return True
+        # Amenities present but no PS40 entry -> definitively not PS40.
         return False
-    # Fallback: scan the whole record's JSON for a PS40 marker.
-    blob = json.dumps(record, default=str).lower().replace(" ", "")
-    for h in config.PS40_LABEL_HINTS:
-        if h.replace(" ", "") in blob:
-            return True
+    # Fallback for unexpected shapes: scan the record's JSON.
+    if "PS40" in json.dumps(record, default=str).upper().replace(" ", ""):
+        return True
     return None
 
 
 def normalize_unit(record: dict) -> dict | None:
-    """Map a raw listing dict to our normalized shape, or None if unusable."""
-    bedrooms = _to_int(_first(record, "bedrooms", "beds", "bedroomCount",
-                              "numberOfBedrooms", "bed"))
-    bathrooms = _to_int(_first(record, "bathrooms", "baths", "bathroomCount",
-                               "numberOfBathrooms", "bath", "fullBathrooms"))
-    price = _to_price(_first(record, "price", "rent", "netRent", "monthlyRent",
-                             "startingPrice", "minPrice", "displayPrice"))
-    unit_no = _first(record, "unitNumber", "apartmentNumber", "unit", "aptNo",
-                     "number", "name")
-    address = _first(record, "address", "buildingAddress", "streetAddress",
-                     "building", "addressLine1")
-    url = _first(record, "url", "detailUrl", "permalink", "link", "slug",
-                 "path", "href")
-    if isinstance(url, str) and url.startswith("/"):
-        url = "https://www.stuytown.com" + url
-    floorplan = _first(record, "floorplan", "floorPlan", "layout", "unitType")
-    available = _first(record, "availableDate", "availabilityDate",
-                       "dateAvailable", "moveInDate")
-    unit_id = _first(record, "id", "unitId", "listingId", "guid", "uid",
-                     "apartmentId")
+    """Map a raw StuyTown unit dict to our normalized shape, or None.
 
-    # A record with no bedroom signal is probably not a real unit.
-    if bedrooms is None and unit_no is None and url is None:
+    Shape confirmed from the live API; generic fallbacks are kept so the code
+    still works if StuyTown renames a field.
+    """
+    if not isinstance(record, dict):
         return None
 
-    # Build a stable identity. Prefer an explicit id, then URL, then a composite.
+    bedrooms = _to_int(_first(record, "bedrooms", "beds", "bedroomCount"))
+    bathrooms = _to_int(_first(record, "bathrooms", "baths", "bathroomCount"))
+    price = _to_price(_first(record, "price", "rent", "netRent", "monthlyRent"))
+    sqft = _to_int(_first(record, "sqft", "squareFeet", "size"))
+    unit_no = _first(record, "unitNumber", "apartmentNumber", "unit", "aptNo")
+    available = _first(record, "availableDate", "availabilityDate",
+                       "dateAvailable", "moveInDate")
+    unit_id = _first(record, "unitSpk", "id", "unitId", "listingId", "guid")
+
+    is_available = record.get("isAvailable")
+    if not isinstance(is_available, bool):
+        is_available = True  # assume listed == available unless told otherwise
+
+    # Nested building object holds the address.
+    building = record.get("building") if isinstance(record.get("building"), dict) else {}
+    address = (building.get("buildingName") or building.get("address")
+               or _first(record, "address", "buildingAddress", "streetAddress"))
+
+    # Finish (e.g. "Classic", "Platinum") doubles as a human-friendly layout tag.
+    finish_obj = record.get("finish") if isinstance(record.get("finish"), dict) else {}
+    finish = finish_obj.get("name") or _first(record, "finish", "layout", "unitType")
+
+    url = _first(record, "url", "detailUrl", "permalink", "link", "href")
+    if isinstance(url, str) and url.startswith("/"):
+        url = "https://www.stuytown.com" + url
+
+    # Not a real unit if it lacks the basics.
+    if bedrooms is None and unit_no is None and unit_id is None:
+        return None
+
     identity = (
         str(unit_id) if unit_id is not None
         else str(url) if url
-        else f"{address}|{unit_no}|{floorplan}|{bedrooms}bd{bathrooms}ba"
+        else f"{address}|{unit_no}|{bedrooms}bd{bathrooms}ba"
     )
 
     return {
@@ -146,15 +160,18 @@ def normalize_unit(record: dict) -> dict | None:
         "bedrooms": bedrooms,
         "bathrooms": bathrooms,
         "price": price,
-        "floorplan": str(floorplan) if floorplan else None,
+        "sqft": sqft,
+        "floorplan": str(finish) if finish else None,
         "available": str(available) if available else None,
+        "is_available": is_available,
         "ps40": _detect_ps40(record),
         "url": str(url) if url else config.SEARCH_URL,
-        "raw_keys": sorted(record.keys()) if isinstance(record, dict) else [],
     }
 
 
 def matches_criteria(unit: dict) -> bool:
+    if not unit.get("is_available", True):
+        return False
     if unit["bedrooms"] is not None and unit["bedrooms"] != config.WANT_BEDROOMS:
         return False
     if unit["bathrooms"] is not None and unit["bathrooms"] != config.WANT_BATHROOMS:
@@ -174,27 +191,63 @@ def _save_debug(name: str, content: str | bytes) -> None:
         f.write(content)
 
 
-def _try_apply_ps40(page, log) -> None:
-    """Best-effort click of the PS40 filter checkbox in the page UI."""
-    for hint in config.PS40_LABEL_HINTS:
+def _api_get(request_ctx, url: str, params: dict, log) -> Any:
+    """GET a StuyTown API endpoint via the browser's request context."""
+    from urllib.parse import urlencode
+
+    full = url + "?" + urlencode(params)
+    try:
+        resp = request_ctx.get(full, timeout=config.NAV_TIMEOUT_MS)
+    except Exception as e:
+        log(f"  API request error: {e}")
+        return None
+    log(f"  GET {full} -> {resp.status}")
+    body = None
+    try:
+        body = resp.json()
+    except Exception:
         try:
-            # Try a label/text containing the hint, case-insensitive.
-            locator = page.get_by_text(re.compile(re.escape(hint), re.I))
-            if locator.count() > 0:
-                locator.first.click(timeout=3000)
-                log(f"Clicked PS40 filter via text match: '{hint}'")
-                page.wait_for_timeout(config.SETTLE_MS)
-                return
+            log(f"  (non-JSON body head: {resp.text()[:200]!r})")
         except Exception:
-            continue
-    log("PS40 filter control not found in UI (relying on URL param / data filter)")
+            pass
+    return body
+
+
+def _log_unit_schema(request_ctx, log) -> None:
+    """One-time diagnostic: dump a real unit's fields to learn the schema."""
+    log("=== SCHEMA PROBE ===")
+    total = _api_get(request_ctx, config.API_COUNT,
+                     {"PropertyName": config.PROPERTY_NAME}, log)
+    log(f"  Total inventory count payload: {json.dumps(total)[:300]}")
+    sample = _api_get(request_ctx, config.API_UNITS,
+                      {"PropertyName": config.PROPERTY_NAME, "itemsOnPage": 3,
+                       "page": 0}, log)
+    if sample is not None:
+        if isinstance(sample, dict):
+            log(f"  units payload top-level keys: {sorted(sample.keys())}")
+        units = list(_iter_listing_dicts(sample))
+        log(f"  sample unit dicts found: {len(units)}")
+        if units:
+            log(f"  FIRST UNIT KEYS: {sorted(units[0].keys())}")
+            log(f"  FIRST UNIT JSON: {json.dumps(units[0], default=str)[:1800]}")
+            # Surface any field that might encode school zone / PS40.
+            for u in units[:1]:
+                hits = {k: v for k, v in u.items()
+                        if "school" in k.lower() or "ps40" in str(v).lower()
+                        or "ps 40" in str(v).lower() or "zone" in k.lower()}
+                log(f"  candidate school/PS40 fields: {hits}")
+    log("=== END SCHEMA PROBE ===")
 
 
 def scrape(log=print) -> list[dict]:
-    """Return a list of normalized units currently matching our criteria."""
+    """Return a list of normalized units currently matching our criteria.
+
+    Queries StuyTown's internal JSON API directly. A short browser visit first
+    establishes cookies / anti-bot context, then we call the API with the
+    browser's request session.
+    """
     from playwright.sync_api import sync_playwright
 
-    captured: list[tuple[str, Any]] = []
     raw_units: list[dict] = []
 
     with sync_playwright() as p:
@@ -210,67 +263,39 @@ def scrape(log=print) -> list[dict]:
         page = ctx.new_page()
         page.set_default_timeout(config.NAV_TIMEOUT_MS)
 
-        def on_response(resp):
-            try:
-                ct = resp.headers.get("content-type", "")
-                if "application/json" in ct:
-                    captured.append((resp.url, resp.json()))
-            except Exception:
-                pass
-
-        page.on("response", on_response)
-
-        log(f"Navigating to {config.SEARCH_URL}")
-        page.goto(config.SEARCH_URL, wait_until="domcontentloaded")
+        # Warm up: load the search page so the API sees normal browser cookies.
+        log(f"Warming session at {config.SEARCH_URL}")
         try:
-            page.wait_for_load_state("networkidle", timeout=config.NAV_TIMEOUT_MS)
-        except Exception:
-            log("networkidle not reached; continuing")
-        page.wait_for_timeout(config.SETTLE_MS)
-
-        if config.WANT_PS40:
-            _try_apply_ps40(page, log)
-
-        # Give any post-filter XHRs a moment to land.
-        page.wait_for_timeout(config.SETTLE_MS)
-
-        # --- Debug artifacts -------------------------------------------------
-        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-        try:
-            _save_debug(f"page-{ts}.html", page.content())
-            page.screenshot(path=os.path.join(config.DEBUG_DIR,
-                                              f"page-{ts}.png"), full_page=True)
+            page.goto(config.SEARCH_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(config.SETTLE_MS)
         except Exception as e:
-            log(f"Could not save page debug artifacts: {e}")
+            log(f"Warm-up navigation issue (continuing): {e}")
 
-        # --- Source 1: captured JSON API responses ---------------------------
-        for url, payload in captured:
-            for rec in _iter_listing_dicts(payload):
-                raw_units.append(rec)
-        if captured:
+        # Schema diagnostic (off by default; set DIAGNOSTICS=1 to inspect).
+        if os.environ.get("DIAGNOSTICS", "0") == "1":
+            _log_unit_schema(ctx.request, log)
+
+        # Real query for the units we want.
+        params = dict(config.API_FILTERS)
+        params["PropertyName"] = config.PROPERTY_NAME
+        if config.PS40_API_PARAM:
+            k, v = config.PS40_API_PARAM
+            params[k] = v
+
+        count = _api_get(ctx.request, config.API_COUNT, params, log)
+        log(f"Count for our filters: {json.dumps(count)[:200]}")
+
+        data = _api_get(ctx.request, config.API_UNITS, params, log)
+        if data is not None:
+            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             try:
-                slim = [{"url": u, "json": j} for u, j in captured]
-                _save_debug(f"captured-{ts}.json",
-                            json.dumps(slim, default=str)[:2_000_000])
+                _save_debug(f"units-{ts}.json",
+                            json.dumps(data, default=str)[:2_000_000])
             except Exception:
                 pass
-        log(f"Captured {len(captured)} JSON responses; "
-            f"{len(raw_units)} listing-like records from network")
-
-        # --- Source 2: embedded __NEXT_DATA__ / inline JSON ------------------
-        if not raw_units:
-            try:
-                next_data = page.evaluate(
-                    "() => { const el = document.getElementById('__NEXT_DATA__');"
-                    " return el ? el.textContent : null; }"
-                )
-                if next_data:
-                    _save_debug(f"nextdata-{ts}.json", next_data[:2_000_000])
-                    for rec in _iter_listing_dicts(json.loads(next_data)):
-                        raw_units.append(rec)
-                    log(f"Recovered {len(raw_units)} records from __NEXT_DATA__")
-            except Exception as e:
-                log(f"__NEXT_DATA__ extraction failed: {e}")
+            for rec in _iter_listing_dicts(data):
+                raw_units.append(rec)
+        log(f"{len(raw_units)} unit records returned by API")
 
         browser.close()
 
