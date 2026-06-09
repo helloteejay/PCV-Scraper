@@ -7,10 +7,18 @@ name: Check StuyTown Availability
 
 on:
   schedule:
-    # Times are UTC. We run a broad window and let main.py enforce the exact
-    # "Tue–Sat, 7am–9pm ET" window (handles DST + day boundaries correctly).
-    - cron: "*/30 11-23 * * *"   # ~7am–7pm ET
-    - cron: "*/30 0-2 * * *"     # ~7pm–9pm ET (next UTC day)
+    # Times are UTC; main.py enforces the exact "Tue–Sat, 7am–9pm ET" window
+    # (handles DST + day boundaries). New units drop ~7:30am ET and GitHub's
+    # cron is jittery (can lag several minutes), so we check every 2 min across
+    # the drop window to catch a new listing within a minute or two.
+    #   11:xx UTC = 7:xx EDT (summer)   |   12:xx UTC = 7:xx EST (winter)
+    # The "other" hour is gated out (winter) or acts as a harmless ~8:30 sweep
+    # (summer).
+    - cron: "26-56/2 11 * * *"   # morning drop burst (EDT)
+    - cron: "26-56/2 12 * * *"   # morning drop burst (EST)
+    # Lighter sweeps for units that post later in the day.
+    - cron: "*/30 13-23 * * *"   # ~9am–7pm ET
+    - cron: "0,30 0-2 * * *"     # ~7pm–9pm ET tail (next UTC day)
   workflow_dispatch:
     inputs:
       ignore_window:
@@ -19,6 +27,10 @@ on:
         default: true
       send_test_message:
         description: "Just send a Telegram test message and exit"
+        type: boolean
+        default: false
+      discover_chats:
+        description: "List chat ids the bot can see (to find your group id) and exit"
         type: boolean
         default: false
 
@@ -40,6 +52,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+
+      # Cache the Playwright Chromium download (~150MB) so most runs skip it.
+      - name: Cache Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
       # Persist "units we've already alerted on" across runs WITHOUT committing
       # to the repo. The unique key forces a save every run; restore-keys pulls
@@ -66,6 +86,7 @@ jobs:
           # Manual runs ignore the time window by default so you can test anytime.
           ENFORCE_ACTIVE_WINDOW: ${{ (github.event_name == 'workflow_dispatch' && inputs.ignore_window) && '0' || '1' }}
           TELEGRAM_TEST: ${{ (github.event_name == 'workflow_dispatch' && inputs.send_test_message) && '1' || '0' }}
+          TELEGRAM_DISCOVER: ${{ (github.event_name == 'workflow_dispatch' && inputs.discover_chats) && '1' || '0' }}
         run: python main.py
 
       - name: Upload debug artifacts

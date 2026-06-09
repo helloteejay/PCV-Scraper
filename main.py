@@ -49,6 +49,12 @@ def save_state(state: dict) -> None:
 
 
 def main() -> int:
+    # Discovery mode: print chat ids the bot can see, then exit.
+    if os.environ.get("TELEGRAM_DISCOVER") == "1":
+        log("Discovery mode: listing chats the bot can see.")
+        notify.discover_chats(log=log)
+        return 0
+
     # Test mode: send a Telegram connectivity check and exit. Triggered by the
     # workflow's "send_test_message" input. Runs regardless of the time window.
     if os.environ.get("TELEGRAM_TEST") == "1":

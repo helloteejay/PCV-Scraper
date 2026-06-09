@@ -82,6 +82,53 @@ def send_test(log=print) -> bool:
     return ok
 
 
+def discover_chats(log=print) -> bool:
+    """Print every chat the bot can currently see (via getUpdates).
+
+    Use this to find your chat id — DM the bot or add it to a group and send a
+    message there, then run this. Group ids are negative (supergroups start
+    with -100). Set the one you want as the TELEGRAM_CHAT_ID secret.
+    """
+    token, _ = _credentials()
+    if not token:
+        log("TELEGRAM_BOT_TOKEN not set — add it as a secret first.")
+        return False
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{token}/getUpdates", timeout=30)
+    except Exception as e:
+        log(f"getUpdates request failed: {e}")
+        return False
+    log(f"getUpdates -> {r.status_code}")
+    try:
+        data = r.json()
+    except Exception:
+        log(f"Unexpected response: {r.text[:300]}")
+        return False
+
+    chats: dict = {}
+    for upd in data.get("result", []):
+        for key in ("message", "edited_message", "channel_post",
+                    "my_chat_member", "chat_member"):
+            chat = (upd.get(key) or {}).get("chat") or {}
+            cid = chat.get("id")
+            if cid is not None:
+                label = (chat.get("title") or chat.get("username")
+                         or " ".join(filter(None, [chat.get("first_name"),
+                                                   chat.get("last_name")]))
+                         or "?")
+                chats[cid] = f"{label} [{chat.get('type')}]"
+
+    if not chats:
+        log("No chats found yet. DM the bot (or add it to your group and send "
+            "a message there), then run this again.")
+        return True
+    log("Discovered chats — set TELEGRAM_CHAT_ID to the id you want:")
+    for cid, label in chats.items():
+        log(f"  chat_id = {cid}   ({label})")
+    return True
+
+
 def send_new_units(units: list[dict], log=print) -> bool:
     """Send one Telegram message summarizing newly-found units."""
     if not units:
