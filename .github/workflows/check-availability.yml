@@ -23,7 +23,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: stuytown-availability
@@ -41,6 +41,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Persist "units we've already alerted on" across runs WITHOUT committing
+      # to the repo. The unique key forces a save every run; restore-keys pulls
+      # the most recent prior state. Runs are serialized (concurrency group)
+      # so the state evolves cleanly.
+      - name: Restore seen-units state
+        uses: actions/cache@v4
+        with:
+          path: state/seen.json
+          key: seen-state-${{ github.run_id }}
+          restore-keys: |
+            seen-state-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -55,18 +67,6 @@ jobs:
           ENFORCE_ACTIVE_WINDOW: ${{ (github.event_name == 'workflow_dispatch' && inputs.ignore_window) && '0' || '1' }}
           TELEGRAM_TEST: ${{ (github.event_name == 'workflow_dispatch' && inputs.send_test_message) && '1' || '0' }}
         run: python main.py
-
-      - name: Commit updated state
-        run: |
-          git config user.name "stuytown-bot"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/seen.json
-          if git diff --cached --quiet; then
-            echo "No state changes to commit."
-          else
-            git commit -m "Update seen-units state [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
-          fi
 
       - name: Upload debug artifacts
         if: always()
