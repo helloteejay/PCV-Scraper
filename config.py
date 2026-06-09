@@ -86,5 +86,7 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 NAV_TIMEOUT_MS = 60_000
+# Retries (with exponential backoff) on HTTP 429 / 5xx from the StuyTown API.
+API_MAX_RETRIES = 3
 # Extra settle time (ms) after network goes idle, for late-rendering listings.
 SETTLE_MS = 4_000
