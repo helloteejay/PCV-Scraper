@@ -16,9 +16,9 @@ on:
     # (summer).
     - cron: "26-56/2 11 * * *"   # morning drop burst (EDT)
     - cron: "26-56/2 12 * * *"   # morning drop burst (EST)
-    # Lighter sweeps for units that post later in the day.
-    - cron: "*/30 13-23 * * *"   # ~9am–7pm ET
-    - cron: "0,30 0-2 * * *"     # ~7pm–9pm ET tail (next UTC day)
+    # After the morning burst: once per hour through the day until 9pm ET.
+    - cron: "0 12-23 * * *"      # top of hour, ~8am ET onward
+    - cron: "0 0-2 * * *"        # evening tail to ~9pm ET (next UTC day)
   workflow_dispatch:
     inputs:
       ignore_window:

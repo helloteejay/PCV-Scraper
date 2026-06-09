@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import config
@@ -192,25 +192,39 @@ def _save_debug(name: str, content: str | bytes) -> None:
 
 
 def _api_get(request_ctx, url: str, params: dict, log) -> Any:
-    """GET a StuyTown API endpoint via the browser's request context."""
+    """GET a StuyTown API endpoint via the browser's request context.
+
+    Retries with exponential backoff on rate-limiting (429) or 5xx, so an
+    occasional throttle doesn't drop a run.
+    """
+    import time
     from urllib.parse import urlencode
 
     full = url + "?" + urlencode(params)
-    try:
-        resp = request_ctx.get(full, timeout=config.NAV_TIMEOUT_MS)
-    except Exception as e:
-        log(f"  API request error: {e}")
-        return None
-    log(f"  GET {full} -> {resp.status}")
-    body = None
-    try:
-        body = resp.json()
-    except Exception:
+    for attempt in range(config.API_MAX_RETRIES + 1):
         try:
-            log(f"  (non-JSON body head: {resp.text()[:200]!r})")
+            resp = request_ctx.get(full, timeout=config.NAV_TIMEOUT_MS)
+        except Exception as e:
+            log(f"  API request error: {e}")
+            return None
+        status = resp.status
+        if status == 429 or status >= 500:
+            if attempt < config.API_MAX_RETRIES:
+                wait = 2 ** attempt
+                log(f"  GET {full} -> {status}; backing off {wait}s "
+                    f"(attempt {attempt + 1}/{config.API_MAX_RETRIES})")
+                time.sleep(wait)
+                continue
+        log(f"  GET {full} -> {status}")
+        try:
+            return resp.json()
         except Exception:
-            pass
-    return body
+            try:
+                log(f"  (non-JSON body head: {resp.text()[:200]!r})")
+            except Exception:
+                pass
+            return None
+    return None
 
 
 def _log_unit_schema(request_ctx, log) -> None:
@@ -287,7 +301,7 @@ def scrape(log=print) -> list[dict]:
 
         data = _api_get(ctx.request, config.API_UNITS, params, log)
         if data is not None:
-            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             try:
                 _save_debug(f"units-{ts}.json",
                             json.dumps(data, default=str)[:2_000_000])

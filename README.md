@@ -6,9 +6,9 @@ texts you on **Telegram** the moment one appears.
 
 It runs **entirely in the cloud on GitHub Actions** — no server, no machine of
 your own needs to be on. New units drop ~**7:30am ET**, so it checks **every 2
-minutes during the ~7:25–7:55am ET drop window**, then **every 30 minutes**
-through the day until 9pm ET — **Tuesday–Saturday** (the days StuyTown posts
-new units). Times adjust for DST automatically.
+minutes during the ~7:25–7:55am ET drop window**, then **once an hour** through
+the day until 9pm ET — **Tuesday–Saturday** (the days StuyTown posts new
+units). Times adjust for DST automatically.
 
 ---
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 import config
 import notify
@@ -17,7 +17,7 @@ import scraper
 
 
 def log(msg: str) -> None:
-    print(f"[{datetime.utcnow().isoformat(timespec='seconds')}Z] {msg}",
+    print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')}Z] {msg}",
           flush=True)
 
 
@@ -88,7 +88,7 @@ def main() -> int:
         log("No new units this run.")
 
     # Record everything currently matching so we don't re-alert next time.
-    now_iso = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
     for u in units:
         if u["id"] not in seen:
             seen[u["id"]] = {"first_seen": now_iso, **{k: u[k] for k in
